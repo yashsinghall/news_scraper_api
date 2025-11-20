@@ -60,7 +60,7 @@ def format_article(row):
         "country": "in",
         "author": "null",
         "publishedAt": row["scraped_at"],
-        "urlToImage": row["image_url"],
+        "urlToImage": "https://th-i.thgim.com/public/incoming/3unb17/article70302441.ece/alternates/LANDSCAPE_1200/PTI11_19_2025_000282B.jpg",
         "source": {
             "name": row["source"]
         }
@@ -71,10 +71,7 @@ def format_article(row):
 async def root(request: Request):
     if request.method == "HEAD":
         return Response()
-    return {
-        "message": "News Scraper API",
-        "structure": "Fixed metadata + dynamic URL fields"
-    }
+    return {"message": "News Scraper API"}
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])
