@@ -20,59 +20,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Use direct download URL instead of API (no rate limits!)
 DB_DOWNLOAD_URL = "https://raw.githubusercontent.com/yashsinghall/news_scrapper_safe/main/news_articles.db"
+
+# Cache settings
 DB_CACHE_FILE = "/tmp/news_articles_cached.db"
-CACHE_DURATION = 3600
+CACHE_DURATION = 3600  # 1 hour
 last_fetch_time = 0
 
-
 def get_db():
+    """Download database from GitHub with caching (uses raw URL, no API limits)"""
     global last_fetch_time
+
     current_time = time.time()
 
+    # Use cached database if recent
     if os.path.exists(DB_CACHE_FILE) and (current_time - last_fetch_time) < CACHE_DURATION:
         return sqlite3.connect(DB_CACHE_FILE)
 
+    # Fetch fresh database from GitHub (raw URL - no rate limits!)
     try:
         response = requests.get(DB_DOWNLOAD_URL, timeout=15)
         response.raise_for_status()
 
+        # Save binary content directly
         with open(DB_CACHE_FILE, 'wb') as f:
             f.write(response.content)
 
         last_fetch_time = current_time
         return sqlite3.connect(DB_CACHE_FILE)
 
-    except:
+    except requests.exceptions.RequestException as e:
+        # If download fails but cache exists, use cache
         if os.path.exists(DB_CACHE_FILE):
             return sqlite3.connect(DB_CACHE_FILE)
-        raise HTTPException(status_code=500, detail="Database fetch failed")
-
-
-def format_article(row):
-    return {
-        "title": "Happy Inter",
-        "content": "Happy Internatio",
-        "url": row["url"],
-        "description": "Happy International Men's Day",
-        "category": "general",
-        "language": "en",
-        "country": "in",
-        "author": "null",
-        "publishedAt": row["scraped_at"],
-        "urlToImage": "https://th-i.thgim.com/public/incoming/3unb17/article70302441.ece/alternates/LANDSCAPE_1200/PTI11_19_2025_000282B.jpg",
-        "source": {
-            "name": row["source"]
-        }
-    }
-
+        raise HTTPException(status_code=500, detail=f"Failed to fetch database: {str(e)}")
 
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root(request: Request):
     if request.method == "HEAD":
         return Response()
-    return {"message": "News Scraper API"}
-
+    return {
+        "message": "News Scraper API - Live news from multiple sources",
+        "version": "1.0.0",
+        "cache_duration": f"{CACHE_DURATION} seconds",
+        "endpoints": {
+            "/articles": "Get all articles with filters",
+            "/articles/latest": "Get latest articles",
+            "/articles/sources": "Get list of sources",
+            "/articles/stats": "Get statistics",
+            "/health": "Health check",
+            "/docs": "Interactive documentation"
+        }
+    }
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health_check(request: Request):
@@ -80,18 +80,21 @@ async def health_check(request: Request):
         return Response()
     return {"status": "healthy"}
 
-
-@app.get("/articles")
+@app.api_route("/articles", methods=["GET", "HEAD"])
 async def get_articles(
+    request: Request,
     limit: int = Query(50, ge=1, le=1000),
-    source: Optional[str] = None,
-    search: Optional[str] = None,
+    source: Optional[str] = Query(None),
+    search: Optional[str] = Query(None)
 ):
+    if request.method == "HEAD":
+        return Response()
+
     conn = get_db()
-    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    query = "SELECT * FROM news WHERE 1=1"
+    # MODIFICATION 1: Change 'summary' to 'summary AS content'
+    query = "SELECT id, source, title, url, summary AS content, image_url, scraped_at FROM news WHERE 1=1"
     params = []
 
     if source:
@@ -99,40 +102,50 @@ async def get_articles(
         params.append(source)
 
     if search:
-        query += " AND (title LIKE ? OR summary LIKE ?)"
+        # Note: The search still uses 'summary' for the database query, but the output key is 'content'
+        query += " AND (title LIKE ? OR summary LIKE ?)" 
         params.extend([f"%{search}%", f"%{search}%"])
 
     query += " ORDER BY scraped_at DESC LIMIT ?"
     params.append(limit)
 
     cursor.execute(query, params)
-    rows = cursor.fetchall()
+    columns = [desc[0] for desc in cursor.description]
+    results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
     conn.close()
 
     return {
-        "total": len(rows),
-        "articles": [format_article(row) for row in rows]
+        "total": len(results),
+        "filters": {"limit": limit, "source": source, "search": search},
+        "articles": results
     }
 
+@app.api_route("/articles/latest", methods=["GET", "HEAD"])
+async def get_latest_articles(request: Request, limit: int = Query(10, ge=1, le=100)):
+    if request.method == "HEAD":
+        return Response()
 
-@app.get("/articles/latest")
-async def get_latest_articles(limit: int = Query(10, ge=1, le=100)):
     conn = get_db()
-    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    cursor.execute("SELECT * FROM news ORDER BY scraped_at DESC LIMIT ?", (limit,))
-    rows = cursor.fetchall()
+    cursor.execute(
+        # MODIFICATION 2: Change 'summary' to 'summary AS content'
+        "SELECT id, source, title, url, summary AS content, image_url, scraped_at FROM news ORDER BY scraped_at DESC LIMIT ?",
+        (limit,)
+    )
+
+    columns = [desc[0] for desc in cursor.description]
+    results = [dict(zip(columns, row)) for row in cursor.fetchall()]
     conn.close()
 
-    return {
-        "total": len(rows),
-        "articles": [format_article(row) for row in rows]
-    }
+    return {"total": len(results), "articles": results}
 
+@app.api_route("/articles/sources", methods=["GET", "HEAD"])
+async def get_sources(request: Request):
+    if request.method == "HEAD":
+        return Response()
 
-@app.get("/articles/sources")
-async def get_sources():
     conn = get_db()
     cursor = conn.cursor()
 
@@ -140,46 +153,56 @@ async def get_sources():
     sources = [row[0] for row in cursor.fetchall()]
     conn.close()
 
-    return {"sources": sources}
+    return {"total_sources": len(sources), "sources": sources}
 
+@app.api_route("/articles/stats", methods=["GET", "HEAD"])
+async def get_stats(request: Request):
+    if request.method == "HEAD":
+        return Response()
 
-@app.get("/articles/stats")
-async def get_stats():
     conn = get_db()
     cursor = conn.cursor()
 
     cursor.execute("SELECT COUNT(*) FROM news")
     total = cursor.fetchone()[0]
 
-    cursor.execute("SELECT source, COUNT(*) FROM news GROUP BY source ORDER BY COUNT(*) DESC")
-    by_source = [{"source": r[0], "count": r[1]} for r in cursor.fetchall()]
+    cursor.execute("SELECT source, COUNT(*) as count FROM news GROUP BY source ORDER BY count DESC")
+    by_source = [{"source": row[0], "count": row[1]} for row in cursor.fetchall()]
+
+    cursor.execute("SELECT MAX(scraped_at) FROM news")
+    last_updated = cursor.fetchone()[0]
+
+    cursor.execute("SELECT MIN(scraped_at) FROM news")
+    first_article = cursor.fetchone()[0]
 
     conn.close()
 
     return {
         "total_articles": total,
-        "details": by_source
+        "articles_by_source": by_source,
+        "last_updated": last_updated,
+        "first_article": first_article
     }
 
+@app.api_route("/articles/by-source/{source_name}", methods=["GET", "HEAD"])
+async def get_articles_by_source(request: Request, source_name: str, limit: int = Query(50, ge=1, le=500)):
+    if request.method == "HEAD":
+        return Response()
 
-@app.get("/articles/by-source/{source_name}")
-async def get_articles_by_source(source_name: str, limit: int = Query(50, ge=1, le=500)):
     conn = get_db()
-    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     cursor.execute(
-        "SELECT * FROM news WHERE source = ? ORDER BY scraped_at DESC LIMIT ?",
+        # MODIFICATION 3: Change 'summary' to 'summary AS content'
+        "SELECT id, source, title, url, summary AS content, image_url, scraped_at FROM news WHERE source = ? ORDER BY scraped_at DESC LIMIT ?",
         (source_name, limit)
     )
-    rows = cursor.fetchall()
+
+    columns = [desc[0] for desc in cursor.description]
+    results = [dict(zip(columns, row)) for row in cursor.fetchall()]
     conn.close()
 
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"No articles found for: {source_name}")
+    if not results:
+        raise HTTPException(status_code=404, detail=f"No articles found for source: {source_name}")
 
-    return {
-        "source": source_name,
-        "total": len(rows),
-        "articles": [format_article(row) for row in rows]
-    }
+    return {"source": source_name, "total": len(results), "articles": results}
