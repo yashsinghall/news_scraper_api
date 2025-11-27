@@ -25,7 +25,7 @@ DB_DOWNLOAD_URL = "https://raw.githubusercontent.com/yashsinghall/news_scrapper_
 
 # Cache settings
 DB_CACHE_FILE = "/tmp/news_articles_cached.db"
-CACHE_DURATION = 3600  # 1 hour
+CACHE_DURATION = 60  # 1 min
 last_fetch_time = 0
 
 def get_db():
